@@ -36,6 +36,8 @@ from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Query
 
+from app.db.session import async_session_factory
+
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["chatbot-ws"])
 
@@ -142,17 +144,19 @@ async def _handle_chat(session_id: str, brand_id: str, data: dict):
     # 1. Send typing indicator
     await manager.send(session_id, {"type": "typing", "status": True})
 
-    # 2. Get response from chatbot engine
+    # 2. Get response from chatbot engine (with DB session for brand context)
     from app.services.intelligence.chatbot_engine import get_chatbot_engine
     engine = get_chatbot_engine()
 
-    result = await engine.chat(
-        session_id=session_id,
-        brand_id=brand_id,
-        message=message,
-        channel="websocket",
-        language=language,
-    )
+    async with async_session_factory() as db:
+        result = await engine.chat(
+            session_id=session_id,
+            brand_id=brand_id,
+            message=message,
+            channel="websocket",
+            language=language,
+            db=db,
+        )
 
     # 3. Stream response token-by-token
     response_text = result.get("response", "")
@@ -165,13 +169,14 @@ async def _handle_chat(session_id: str, brand_id: str, data: dict):
         await manager.send(session_id, {"type": "stream_token", "token": token})
         await asyncio.sleep(0.03)  # 30ms between words
 
-    # 4. Send complete
+    # 4. Send complete (with interactive actions)
     await manager.send(session_id, {
         "type": "stream_end",
         "full_response": response_text,
         "confidence": result.get("confidence", 0),
         "escalated": result.get("escalated", False),
         "language": result.get("language"),
+        "actions": result.get("actions", []),
     })
 
     # 5. Stop typing
@@ -195,15 +200,17 @@ async def _handle_voice(session_id: str, brand_id: str, data: dict):
 
     await manager.send(session_id, {"type": "typing", "status": True})
 
-    # Process through chatbot engine
+    # Process through chatbot engine (with DB session for brand context)
     from app.services.intelligence.chatbot_engine import get_chatbot_engine
     engine = get_chatbot_engine()
 
-    result = await engine.voice_chat(
-        session_id=session_id,
-        brand_id=brand_id,
-        audio_path=tmp_path,
-    )
+    async with async_session_factory() as db:
+        result = await engine.voice_chat(
+            session_id=session_id,
+            brand_id=brand_id,
+            audio_path=tmp_path,
+            db=db,
+        )
 
     # Stream the text response
     response_text = result.get("response", "")

@@ -73,6 +73,7 @@ async def create_tenant(body: TenantCreate, db: DbSession, _: MasterKeyAuth):
         slug=body.slug,
         contact_email=body.contact_email,
         description=body.description,
+        website_url=body.website_url,
         config=body.config or {},
         rate_limits=body.rate_limits,
     )
@@ -269,3 +270,48 @@ async def rotate_api_key(tenant_id: int, key_id: int, db: DbSession, _: MasterKe
             expires_at=new_key.expires_at.isoformat() if new_key.expires_at else None,
         ),
     )
+
+
+# ─── Brand Auto-Enrichment (Software Factory: manual pipeline trigger) ──
+
+@router.post("/{slug}/enrich", summary="Enrich brand context from website")
+async def enrich_tenant_brand(slug: str, db: DbSession, _: MasterKeyAuth):
+    """
+    Manually trigger the Brand Enrichment pipeline for a tenant.
+
+    Software Factory: SCRAPE → EXTRACT → GATE → STORE → STAMP.
+    Requires tenant.website_url to be set.
+
+    Use cases:
+    - Initial setup before chatbot goes live
+    - Force re-enrich after website redesign
+    - Admin dashboard "Refresh Brand Context" button
+    """
+    tenant = await TenantService.get_by_slug(db, slug)
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    if not tenant.website_url:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Tenant has no website_url set. Update the tenant first.",
+        )
+
+    from app.services.intelligence.brand_enricher import get_brand_enricher
+
+    result = await get_brand_enricher().enrich(tenant, db)
+
+    if result:
+        return {
+            "status": "enriched",
+            "slug": slug,
+            "extracted_fields": list(result.keys()),
+            "brand_description": result.get("brand_description", ""),
+        }
+    else:
+        return {
+            "status": "failed",
+            "slug": slug,
+            "message": "Enrichment failed — check quality gate or website accessibility.",
+        }
+

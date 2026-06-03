@@ -11,6 +11,7 @@ class TenantCreate(BaseModel):
     slug: str = Field(..., min_length=1, max_length=100, pattern=r"^[a-z0-9-]+$", description="URL-safe identifier")
     contact_email: str | None = Field(None, description="Admin contact email")
     description: str | None = Field(None, description="Organization description")
+    website_url: str | None = Field(None, description="Website URL — triggers auto brand enrichment")
     config: dict | None = Field(default_factory=dict, description="Tenant-level config overrides")
     rate_limits: dict | None = Field(None, description="Rate limit overrides (null = use global)")
 
@@ -20,6 +21,7 @@ class TenantUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     contact_email: str | None = None
     description: str | None = None
+    website_url: str | None = None
     config: dict | None = None
     rate_limits: dict | None = None
     webhook_url: str | None = None
@@ -33,6 +35,7 @@ class TenantResponse(BaseModel):
     is_active: bool
     contact_email: str | None = None
     description: str | None = None
+    website_url: str | None = None
     config: dict | None = None
     live_api_key: str | None = Field(None, description="Full production API key")
     test_api_key: str | None = Field(None, description="Full sandbox API key")
@@ -48,6 +51,7 @@ class TenantCreated(BaseModel):
     is_active: bool
     contact_email: str | None = None
     description: str | None = None
+    website_url: str | None = None
     config: dict | None = None
     live_api_key: str = Field(..., description="Production API key (sk_live_*) — save it, cannot be retrieved again")
     test_api_key: str = Field(..., description="Sandbox API key (sk_test_*) — save it, cannot be retrieved again")

@@ -138,7 +138,7 @@ class TenantService:
     @classmethod
     async def update(cls, db: AsyncSession, tenant: Tenant, **updates) -> Tenant:
         """Update tenant fields."""
-        allowed = {"name", "contact_email", "description", "config", "rate_limits", "webhook_url", "is_active"}
+        allowed = {"name", "contact_email", "description", "config", "rate_limits", "webhook_url", "is_active", "website_url", "re_enrich_interval_days"}
         for key, value in updates.items():
             if key in allowed and value is not None:
                 setattr(tenant, key, value)

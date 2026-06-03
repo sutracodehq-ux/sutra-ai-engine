@@ -1,6 +1,8 @@
 """Tenant model — each consuming product (Tryambaka, e-commerce, etc.)."""
 
-from sqlalchemy import BigInteger, Boolean, JSON, String, Text
+from datetime import datetime
+
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base, TimestampMixin
@@ -34,6 +36,13 @@ class Tenant(Base, TimestampMixin):
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     webhook_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     identity_org_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True, unique=True)
+
+    # ─── Brand Auto-Enrichment (Software Factory: golden path trigger) ──
+    # Set website_url → engine auto-scrapes and populates brand context.
+    website_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    brand_enriched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Per-tenant override for YAML default (null = use global config)
+    re_enrich_interval_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Relationships
     api_keys = relationship("ApiKey", back_populates="tenant", lazy="dynamic", cascade="all, delete-orphan")

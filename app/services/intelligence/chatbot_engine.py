@@ -21,6 +21,7 @@ Architecture:
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 from pathlib import Path
@@ -30,6 +31,64 @@ import yaml
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_actions(response_text: str, user_message: str, config: dict) -> tuple[str, list[dict]]:
+    """
+    Extract interactive actions from AI response + keyword fallback.
+
+    Two-pass strategy:
+    1. Parse [ACTIONS: id1, id2] tags from LLM response
+    2. Keyword fallback: match user message against action keywords
+
+    Returns (clean_response_text, resolved_actions_list).
+    Config-driven: actions defined in intelligence_config.yaml.
+    """
+    actions_cfg = config.get("interactive_actions", {})
+    if not actions_cfg.get("enabled"):
+        return response_text, []
+
+    available = {a["id"]: a for a in actions_cfg.get("actions", [])}
+    max_actions = actions_cfg.get("max_per_response", 3)
+
+    resolved_ids: list[str] = []
+
+    # Pass 1: Extract [ACTIONS: ...] from LLM response
+    action_pattern = r'\[ACTIONS?:\s*([^\]]+)\]'
+    match = re.search(action_pattern, response_text, re.IGNORECASE)
+    if match:
+        ids = [x.strip() for x in match.group(1).split(",")]
+        resolved_ids.extend(i for i in ids if i in available)
+        # Clean the tag from the response text
+        response_text = re.sub(action_pattern, "", response_text, flags=re.IGNORECASE).strip()
+
+    # Pass 2: Keyword fallback (if LLM didn't suggest enough)
+    if len(resolved_ids) < max_actions:
+        msg_lower = user_message.lower()
+        for action in actions_cfg.get("actions", []):
+            if action["id"] in resolved_ids:
+                continue
+            keywords = action.get("keywords", [])
+            if any(kw in msg_lower for kw in keywords):
+                resolved_ids.append(action["id"])
+                if len(resolved_ids) >= max_actions:
+                    break
+
+    # Resolve IDs to full action objects
+    actions = []
+    for aid in resolved_ids[:max_actions]:
+        if aid in available:
+            a = available[aid]
+            actions.append({
+                "id": a["id"],
+                "label": a["label"],
+                "description": a.get("description", ""),
+                "type": a.get("type", "link"),
+                "url": a.get("url", ""),
+                "action": a.get("action", ""),
+            })
+
+    return response_text, actions
 
 
 def _load_chatbot_config() -> dict:
@@ -107,7 +166,10 @@ class ChatbotEngine:
 
         Reads from existing DB fields first (name, description),
         then overlays any explicit overrides from tenant.config JSON.
-        No manual setup needed — works out of the box.
+
+        Software Factory: if website_url is set but brand hasn't been enriched,
+        triggers the BrandEnricher pipeline in background (non-blocking).
+        First chat uses tenant.name fallback. Second chat uses enriched data.
         """
         if not db:
             return None
@@ -129,6 +191,25 @@ class ChatbotEngine:
 
             if not tenant:
                 return None
+
+            # ─── Auto-Enrich Hook (Software Factory: automated pipeline) ──
+            # Golden path: website_url set + not enriched → trigger in background.
+            # Config-driven: reads enabled/auto_enrich flags from YAML.
+            try:
+                from app.services.intelligence.brand_enricher import (
+                    get_brand_enricher, _get_enricher_config, _needs_enrichment,
+                )
+                enricher_cfg = _get_enricher_config()
+                if (enricher_cfg.get("enabled") and
+                    enricher_cfg.get("auto_enrich_on_first_chat") and
+                    _needs_enrichment(tenant, enricher_cfg)):
+                    import asyncio
+                    asyncio.create_task(
+                        get_brand_enricher().enrich(tenant, db)
+                    )
+                    logger.info(f"Chatbot: triggered background enrichment for {tenant.slug}")
+            except Exception as e:
+                logger.debug(f"Chatbot: auto-enrich check skipped: {e}")
 
             # Auto-resolve from existing tenant fields
             brand_config = {
@@ -222,16 +303,49 @@ class ChatbotEngine:
 
         # ─── Build Enhanced Prompt ────────────────────────
         prompt_parts = []
+
+        # ─── Brand Identity Injection (Software Factory: config-driven) ──
+        # Reads template + field map from intelligence_config.yaml → chatbot.brand_identity_prompt.
+        # Changing tone/format = edit YAML. Zero Python changes needed.
+        identity_cfg = config.get("brand_identity_prompt", {})
+        if identity_cfg.get("enabled", True) and brand_config:
+            template = identity_cfg.get("template", "")
+            fields_map = identity_cfg.get("context_fields", {})
+
+            # Resolve placeholders from brand_config → fallback
+            values = {
+                cfg["placeholder"]: brand_config.get(key, cfg.get("fallback", ""))
+                for key, cfg in fields_map.items()
+            }
+
+            if template and values.get("brand_name"):
+                try:
+                    prompt_parts.append(template.format(**values))
+                except KeyError as e:
+                    logger.warning(f"Chatbot: brand template placeholder missing: {e}")
+
         if has_knowledge:
             brand_context = knowledge_result.get("context", "")
             if brand_context:
                 prompt_parts.append(f"Relevant Brand Knowledge:\n{brand_context}")
 
         prompt_parts.append(f"Customer Question: {message}")
-        prompt_parts.append(
-            "Respond helpfully and conversationally using whatever brand context you have. "
-            "Be specific to this brand — never give generic advice."
+
+        # Guardrail instruction (from YAML) to prevent brand hallucination
+        guardrail = identity_cfg.get(
+            "guardrail",
+            "Respond helpfully and conversationally as this brand's representative. "
+            "Be specific to this brand — never give generic advice. "
+            "NEVER mention or pretend to be any other brand or company."
         )
+        prompt_parts.append(guardrail)
+
+        # ─── Interactive Actions instruction (from YAML) ──────────
+        actions_cfg = config.get("interactive_actions", {})
+        if actions_cfg.get("enabled"):
+            action_instruction = actions_cfg.get("action_instruction", "")
+            if action_instruction:
+                prompt_parts.append(action_instruction)
 
         enhanced_prompt = "\n\n".join(prompt_parts)
 
@@ -260,6 +374,10 @@ class ChatbotEngine:
                 )
         except (json.JSONDecodeError, TypeError):
             pass  # Not JSON — use raw text as-is (already markdown)
+
+        # ─── Resolve Interactive Actions (Software Factory: config-driven) ──
+        response_text, actions = _resolve_actions(response_text, message, config)
+
         session.add_message("assistant", response_text)
 
         # 3. Escalate if low confidence
@@ -293,6 +411,7 @@ class ChatbotEngine:
             "escalated": escalated,
             "language": session.language,
             "channel": channel,
+            "actions": actions,
         }
 
         # 4. Log for analytics
