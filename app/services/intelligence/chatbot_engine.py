@@ -303,7 +303,7 @@ class ChatbotEngine:
         hub = AiAgentHub()
 
         # ─── Agent Resolution ─────────────────────────────
-        # Priority: brand config → chatbot config → fallback
+        # Priority: tenant.config (DB) → chatbot config (YAML) → fallback
         # Intent routing is handled centrally by hub._resolve_agent()
         agent_id = config.get("default_agent", "chatbot_trainer")
 
@@ -329,50 +329,68 @@ class ChatbotEngine:
                     context[key] = brand_config[key]
 
         # ─── Build Enhanced Prompt ────────────────────────
+        # Software Factory: all prompt data comes from tenant.config (DB).
+        # Edit YAML → run seeder → DB updated → chatbot uses new data.
+        # Zero Python changes needed to update pricing, knowledge, or actions.
         prompt_parts = []
 
-        # ─── Brand Identity Injection (Software Factory: config-driven) ──
-        # Reads template + field map from intelligence_config.yaml → chatbot.brand_identity_prompt.
-        # Changing tone/format = edit YAML. Zero Python changes needed.
-        identity_cfg = config.get("brand_identity_prompt", {})
-        if identity_cfg.get("enabled", True) and brand_config:
-            template = identity_cfg.get("template", "")
-            fields_map = identity_cfg.get("context_fields", {})
+        # 1. System Prompt (from DB: tenant.config.system_prompt)
+        #    Priority: brand_config → YAML brand_identity_prompt → generic fallback
+        if brand_config and brand_config.get("system_prompt"):
+            prompt_parts.append(brand_config["system_prompt"])
+        else:
+            # Fallback: generic brand identity template from intelligence_config.yaml
+            identity_cfg = config.get("brand_identity_prompt", {})
+            if identity_cfg.get("enabled", True) and brand_config:
+                template = identity_cfg.get("template", "")
+                fields_map = identity_cfg.get("context_fields", {})
+                values = {
+                    cfg["placeholder"]: brand_config.get(key, cfg.get("fallback", ""))
+                    for key, cfg in fields_map.items()
+                }
+                if template and values.get("brand_name"):
+                    try:
+                        prompt_parts.append(template.format(**values))
+                    except KeyError as e:
+                        logger.warning(f"Chatbot: brand template placeholder missing: {e}")
 
-            # Resolve placeholders from brand_config → fallback
-            values = {
-                cfg["placeholder"]: brand_config.get(key, cfg.get("fallback", ""))
-                for key, cfg in fields_map.items()
-            }
-
-            if template and values.get("brand_name"):
-                try:
-                    prompt_parts.append(template.format(**values))
-                except KeyError as e:
-                    logger.warning(f"Chatbot: brand template placeholder missing: {e}")
-
+        # 2. Brand Knowledge from memory search (if any)
         if has_knowledge:
             brand_context = knowledge_result.get("context", "")
             if brand_context:
                 prompt_parts.append(f"Relevant Brand Knowledge:\n{brand_context}")
 
+        # 3. Knowledge Base (from DB: tenant.config.knowledge_base)
+        #    Simple yaml.dump — no manual serialization needed.
+        kb = (brand_config or {}).get("knowledge_base")
+        if kb and isinstance(kb, dict):
+            import yaml as _yaml
+            kb_text = _yaml.dump(kb, default_flow_style=False, allow_unicode=True)
+            prompt_parts.append(
+                f"Knowledge Base (USE THIS DATA for accurate answers):\n{kb_text}"
+            )
+
+        # 4. Customer message
         prompt_parts.append(f"Customer Question: {message}")
 
-        # Guardrail instruction (from YAML) to prevent brand hallucination
-        guardrail = identity_cfg.get(
-            "guardrail",
-            "Respond helpfully and conversationally as this brand's representative. "
-            "Be specific to this brand — never give generic advice. "
-            "NEVER mention or pretend to be any other brand or company."
+        # 5. Guardrail (from DB → fallback to YAML → fallback to hardcoded)
+        guardrail = (
+            (brand_config or {}).get("guardrail")
+            or config.get("brand_identity_prompt", {}).get("guardrail")
+            or "Respond helpfully and conversationally as this brand's representative. "
+               "Be specific — never give generic advice. "
+               "NEVER mention or pretend to be any other brand or company."
         )
         prompt_parts.append(guardrail)
 
-        # ─── Interactive Actions instruction (from YAML) ──────────
-        actions_cfg = config.get("interactive_actions", {})
-        if actions_cfg.get("enabled"):
-            action_instruction = actions_cfg.get("action_instruction", "")
-            if action_instruction:
-                prompt_parts.append(action_instruction)
+        # 6. Interactive Actions instruction (from DB → fallback to YAML)
+        action_instruction = (brand_config or {}).get("action_instruction")
+        if not action_instruction:
+            actions_cfg = config.get("interactive_actions", {})
+            if actions_cfg.get("enabled"):
+                action_instruction = actions_cfg.get("action_instruction", "")
+        if action_instruction:
+            prompt_parts.append(action_instruction)
 
         enhanced_prompt = "\n\n".join(prompt_parts)
 

@@ -41,6 +41,18 @@ TENANTS = [
         },
         "rate_limits": {"rpm": 120, "rpd": 50000},
     },
+    {
+        "name": "SutraCode",
+        "slug": "sutracode",
+        "description": "SutraCode — Darbhanga's leading IT company. Custom software, SaaS, ERP, AI products, digital marketing.",
+        "contact_email": "contact@sutracode.in",
+        "website_url": "https://sutracode.in",
+        "config": {
+            "monthly_token_limit": 1_000_000,
+            "preferred_driver": "groq",
+        },
+        "rate_limits": {"rpm": 60, "rpd": 10000},
+    },
 ]
 
 

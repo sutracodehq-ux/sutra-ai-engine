@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.seeders.base import BaseSeeder
 from app.seeders.tenant_seeder import TenantSeeder
+from app.seeders.chatbot_config_seeder import ChatbotConfigSeeder
 from app.seeders.voice_profile_seeder import VoiceProfileSeeder
 
 logger = logging.getLogger(__name__)
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 SEEDER_REGISTRY: list[BaseSeeder] = [
     TenantSeeder(),
+    ChatbotConfigSeeder(),       # After TenantSeeder (needs tenant to exist)
     VoiceProfileSeeder(),
     # Add new seeders here ↓
 ]
