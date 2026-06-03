@@ -16,7 +16,6 @@ core:
   - qwen3:1.7b            # Primary: router + simple/moderate tasks (1.2 GB)
   - qwen3:4b              # Complex tasks only — loaded on demand (2.8 GB)
   - smollm2:360m           # Ultra-light emergency fallback (250 MB)
-  - qwen2.5:1.5b           # Backup small model (1.0 GB)
 
 # REMOVED for 8 GB hosts (uncomment on 16 GB+ machines):
 #  - gemma4:e4b
